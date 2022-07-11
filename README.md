@@ -1,70 +1,139 @@
-# Getting Started with Create React App
+# XRP Coupon Architecture.
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
 
-## Available Scripts
 
-In the project directory, you can run:
+![Screenshot 2022-03-29 at 12.17.47 AM.png](https://cdn.hashnode.com/res/hashnode/image/upload/v1648499593414/yaBsfQWnM.png)
 
-### `npm start`
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+![Screenshot 2022-03-29 at 1.04.48 AM.png](https://cdn.hashnode.com/res/hashnode/image/upload/v1648500181436/Wvv2SXcrt.png)
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+# ENV variables.
 
-### `npm test`
+Set the following variables in your .env.development
+REACT_APP_SHOPIFY_API_KEY=
+REACT_APP_XRPL_NETWORK=wss://s.altnet.rippletest.net:51233
+REACT_APP_XRPL_SEED=
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+# Entry point.
+The CRA app will load xrpl JS SDK and initialize it in index.js like below (https://github.com/xrp-coupon/widget/blob/main/src/index.js)
+```
+const xrpl = require("xrpl")
+const client = new xrpl.Client(process.env.REACT_APP_XRPL_NETWORK);
+const wallet = xrpl.Wallet.fromSeed(process.env.REACT_APP_XRPL_SEED); // For testing load from env
 
-### `npm run build`
+client.connect().then(() => {
+  ReactDOM.render(
+    <React.StrictMode>
+      <App xrp={{ client, wallet }} />
+    </React.StrictMode>,
+    document.getElementById('root')
+  );
+}).catch((e) => {
+  ReactDOM.render(
+    <React.StrictMode>
+      <h1>Unable to connect. Please try again via page refresh.</h1>
+    </React.StrictMode>,
+    document.getElementById('root')
+  );
+})
+```
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+# React Context to pass wallet and client
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+Once initialized, both wallet and client are passed to subsequent children components using Context (https://github.com/xrp-coupon/widget/blob/main/src/App.js)
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+```
+import React from "react";
+export const ShopContext = React.createContext();
+export const XRPContext = React.createContext();
 
-### `npm run eject`
+    <ChakraProvider>
+      <XRPContext.Provider value={{ wallet: props.wallet, client: props.client }}>
+        <ShopContext.Provider value={shop}>
+          <EmbedRoute />
+        </ShopContext.Provider>
+      </XRPContext.Provider>
+    </ChakraProvider>
+    
+```
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+# Triggering payment with XRP for coupon codes
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+```
+<Button
+	marginTop={"10px"}
+	onClick={() => onXRPClick({ ...params })}
+	isFullWidth
+>
+	Pay {look.price || 0} XRP for {look.discount}% coupon
+</Button>
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+ ```
+ 
+ # Zustand Redux Store that actually triggers payment and waits for confirmation 
+ Code (https://github.com/berrysupport/xrp-coupon-widget/tree/main/src/store/xrp)
+ ```
+postXRPPayments: async ({ client, wallet, merchantXRPAddress, lookPrice, lookDiscount,  lookId,  }) => {
+	set(produce(state => ({
+		...state,
+		xrpPayments: {
+			...state.xrpPayments,
+			post: {
+				...INITIAL_XRP_STATE.post,
+				loading: true,
+			}
+		}
+	})))
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+	try {
 
-## Learn More
+		/* START XRP PAYMENT */
+		const xrpPaymentForCoupon = await client.autofill({
+			"TransactionType": "Payment",
+			"Account": wallet.address,
+			"Amount": xrpl.xrpToDrops(lookPrice),
+			"Destination": merchantXRPAddress
+		});
+		const signed = wallet.sign(xrpPaymentForCoupon);
+		const tx = await client.submitAndWait(signed.tx_blob)
+		/* XRP PAYMENT COMPLETE */
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+		/* NOW GENERATE COUPON WITH THE SHOPIFY API*/
+		const { data } = await axios.post(`${process.env.REACT_APP_API_SHOPLOOKS_SERVER_URL}/api/post_discount`, {
+			discount: { targetType: 'percentage', value: lookDiscount }
+		});
+		set(produce(state => ({
+			...state,
+			xrpPayments: {
+				...state.xrpPayments,
+				post: {
+					...INITIAL_XRP_STATE.post,
+					success: {
+						ok: true,
+						data
+					},
+				}
+			}
+		})))
+		return data;
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+	} catch (e) {
+		set(produce(state => ({
+			...state,
+			xrpPayments: {
+				...state.xrpPayments,
+				post: {
+					...INITIAL_XRP_STATE.post,
+					failure: {
+						error: true,
+						message: e.message || INTERNAL_SERVER_ERROR
+					},
+				}
+			}
+		})))
+		throw e;
+	}
+},
+```
 
-### Code Splitting
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
-
-### Analyzing the Bundle Size
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
-
-### Making a Progressive Web App
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
-
-### Advanced Configuration
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
-
-### Deployment
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
-
-### `npm run build` fails to minify
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+# For more check the dependent libraries like api, cdn, client 
